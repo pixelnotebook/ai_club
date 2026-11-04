@@ -1,119 +1,107 @@
-// ===== site.js: the public, read-only website =====
-// 1) load everything from the database  2) draw the page for the current #link
+// ===== site.js: the public one-page website (Home, Members, Gallery, Achievements) =====
+// Steps: 1) read data from the database  2) build the whole page  3) add small interactions
 const D = {settings: {}};
-const ORDER = {members:['name',true], projects:['created_at',false], gallery:['created_at',false],
-  achievements:['achieved_on',false], events:['event_date',false], announcements:['posted_on',false], resources:['title',true]};
-const today = new Date().toISOString().slice(0, 10);
-let projFilter = 'All', galCat = 'All';
 const S = k => esc(D.settings[k] || '');
-const img = (u, name) => safeUrl(u) ? `<img src="${esc(u)}" alt="${esc(name)}" loading="lazy">` : `<div class="ph">${esc((name||'?')[0])}</div>`;
-const lines = t => esc(t).split('\n').filter(Boolean).map(l => `<li>${l}</li>`).join('');
+const img = (u, n) => safeUrl(u) ? `<img src="${esc(u)}" alt="${esc(n)}" loading="lazy">` : '';
+let galCat = 'All', shown = [], lbIndex = 0;
 
 async function load() {
-  const names = Object.keys(ORDER);
-  const res = await Promise.all([
-    ...names.map(t => db.from(t).select('*').order(ORDER[t][0], {ascending: ORDER[t][1]})),
+  const [m, g, a, p, s] = await Promise.all([
+    db.from('members').select('*').order('name'),
+    db.from('gallery').select('*').order('created_at', {ascending: false}),
+    db.from('achievements').select('*').order('achieved_on', {ascending: false}),
+    db.from('projects').select('id', {count: 'exact', head: true}),
     db.from('settings').select('*')]);
-  const bad = res.find(r => r.error);
+  const bad = [m, g, a, p, s].find(r => r.error);
   if (bad) throw bad.error;
-  names.forEach((t, i) => D[t] = res[i].data);
-  res[names.length].data.forEach(r => D.settings[r.key] = r.value);
+  D.members = m.data; D.gallery = g.data; D.achievements = a.data; D.projectCount = p.count || 0;
+  s.data.forEach(r => D.settings[r.key] = r.value);
 }
 
-const annCard = a => `<div class="card"><div class="pad"><h3>${a.pinned ? '📌 ' : ''}${esc(a.title)}</h3><p>${esc(a.body)}</p><span class="muted">${fmt(a.posted_on)}</span></div></div>`;
-const projCard = p => { const k = (p.status||'').replace(/\s/g,''); return `<div class="card ${k}">${img(p.photo_url,p.title)}<div class="pad">
-  <span class="tag ${k}">${esc(p.status)}</span> <span class="muted">${esc(p.category)}</span>
-  <h3>${esc(p.title)}</h3><p>${esc(p.description)}</p>
-  <div class="bar"><i style="width:${+p.progress||0}%"></i></div><span class="muted">${+p.progress||0}% done · ${fmt(p.start_date)} to ${fmt(p.end_date)}</span>
-  ${p.students ? `<p class="muted"><b>Team:</b> ${esc(p.students)}</p>` : ''}
-  ${p.milestones ? `<ul class="muted">${lines(p.milestones)}</ul>` : ''}</div></div>`; };
-const achCard = a => `<div class="card">${safeUrl(a.photo_url) ? img(a.photo_url,a.title) : ''}<div class="pad"><h3>${esc(a.title)}</h3><p>${esc(a.description)}</p><span class="muted">${fmt(a.achieved_on)}</span></div></div>`;
-const evCard = e => `<div class="card">${safeUrl(e.photo_url) ? img(e.photo_url,e.title) : ''}<div class="pad"><span class="tag">${esc(e.kind)}</span><h3>${esc(e.title)}</h3><p>${esc(e.description)}</p><span class="muted">${fmt(e.event_date)} ${e.location ? '· ' + esc(e.location) : ''}</span></div></div>`;
-const empty = t => `<p class="muted">${t}</p>`;
-const page = (title, body) => `<section class="blk"><div class="wrap"><h2>${title}</h2>${body}</div></section>`;
+// small decorative "neural network" picture for the hero
+const NET = `<svg class="net" viewBox="0 0 320 300" aria-hidden="true">
+  <g><line x1="40" y1="60" x2="140" y2="40"/><line x1="40" y1="60" x2="130" y2="150"/><line x1="40" y1="150" x2="140" y2="40"/><line x1="40" y1="150" x2="130" y2="150"/>
+  <line x1="40" y1="150" x2="130" y2="250"/><line x1="40" y1="240" x2="130" y2="150"/><line x1="40" y1="240" x2="130" y2="250"/>
+  <line x1="140" y1="40" x2="240" y2="95"/><line x1="130" y1="150" x2="240" y2="95"/><line x1="130" y1="150" x2="240" y2="205"/><line x1="130" y1="250" x2="240" y2="205"/>
+  <line x1="140" y1="40" x2="240" y2="205"/><line x1="240" y1="95" x2="300" y2="150"/><line x1="240" y1="205" x2="300" y2="150"/></g>
+  <circle cx="40" cy="60" r="9"/><circle cx="40" cy="150" r="9"/><circle cx="40" cy="240" r="9"/>
+  <circle class="b" cx="140" cy="40" r="11"/><circle class="a" cx="130" cy="150" r="13"/><circle class="b" cx="130" cy="250" r="11"/>
+  <circle cx="240" cy="95" r="10"/><circle cx="240" cy="205" r="10"/><circle class="a" cx="300" cy="150" r="12"/></svg>`;
 
-const routes = {
-  home() {
-    const done = D.projects.filter(p => p.status === 'Completed').length;
-    const active = D.projects.filter(p => p.status === 'In Progress').length;
-    const past = D.events.filter(e => e.event_date <= today).length;
-    const stat = (n, l) => `<div class="stat"><b>${n}</b>${l}</div>`;
-    const feat = D.projects.filter(p => p.status !== 'Not Started').slice(0, 3);
-    const fa = D.achievements.filter(a => a.featured).slice(0, 3);
-    return `<section class="hero"><div class="wrap"><small>${S('school_name')}</small>
-      <h1>Young minds learning to build with AI</h1><p>${S('welcome')}</p><p>${S('mission')}</p></div></section>
-      <div class="wrap"><div class="stats">${stat(D.members.length,'Club members')}${stat(active,'Active projects')}${stat(done,'Completed projects')}${stat(D.achievements.length,'Achievements')}${stat(past,'Events held')}</div></div>
-      <section class="blk"><div class="wrap"><h2>Latest announcements</h2><div class="grid">${D.announcements.slice(0,3).map(annCard).join('') || empty('No announcements yet.')}</div></div></section>
-      <section class="blk"><div class="wrap"><h2>Featured projects</h2><div class="grid">${feat.map(projCard).join('') || empty('Projects will appear here.')}</div></div></section>
-      <section class="blk"><div class="wrap"><h2>Recent activity and achievements</h2><div class="grid">${fa.map(achCard).join('')}${D.events.filter(e=>e.event_date<=today).slice(0,2).map(evCard).join('')}</div></div></section>`;
-  },
-  about() {
-    const b = (t, k) => D.settings[k] ? `<div class="card"><div class="pad"><h3>${t}</h3><p>${S(k)}</p></div></div>` : '';
-    return page('About the AI Club', `<p>${S('welcome')}</p><div class="grid">
-      ${b('Vision','vision')}${b('Mission','mission')}
-      <div class="card"><div class="pad"><h3>Objectives</h3><ul>${lines(D.settings.objectives)}</ul></div></div>
-      ${b('Why AI education matters','importance')}${b('HP India (donor)','role_hp')}${b('Learning Links Foundation (partner)','role_llf')}${b('School and AI Club Trainer','role_school')}</div>`);
-  },
-  members() {
-    return page('Club members', `<div class="grid">${D.members.map(m => `<div class="card">${img(m.photo_url,m.name)}<div class="pad">
-      <h3>${esc(m.name)}</h3><span class="tag">${esc(m.role)}</span><p class="muted">Class ${esc(m.class_div)} · Joined ${fmt(m.joined_on)}</p>
-      <p>${esc(m.intro)}</p>${m.interests ? `<p class="muted"><b>Interests:</b> ${esc(m.interests)}</p>` : ''}</div></div>`).join('') || empty('No members yet.')}</div>`);
-  },
-  projects() {
-    const f = {All: () => true, Ongoing: p => ['In Progress','On Hold'].includes(p.status), Upcoming: p => p.status === 'Not Started', Completed: p => p.status === 'Completed'};
-    const chips = Object.keys(f).map(k => `<button class="ghost ${k === projFilter ? 'on' : ''}" data-proj="${k}">${k}</button>`).join('');
-    return page('Projects and tasks', `<div class="chips">${chips}</div><div class="grid">${D.projects.filter(f[projFilter]).map(projCard).join('') || empty('No projects in this view.')}</div>`);
-  },
-  gallery() {
-    const cats = ['All', ...new Set(D.gallery.map(g => g.category).filter(Boolean))];
-    if (!cats.includes(galCat)) galCat = 'All';
-    const chips = cats.map(c => `<button class="ghost ${c === galCat ? 'on' : ''}" data-cat="${esc(c)}">${esc(c)}</button>`).join('');
-    const items = D.gallery.filter(g => galCat === 'All' || g.category === galCat);
-    return page('Gallery', `<div class="chips">${chips}</div><div class="grid">${items.map(g => `<div class="card" style="cursor:pointer" data-big="${esc(g.image_url)}" data-cap="${esc(g.caption)}">${img(g.image_url,g.caption)}<div class="pad"><b>${esc(g.caption)}</b><br><span class="muted">${esc(g.description)}</span></div></div>`).join('') || empty('No photos yet.')}</div>`);
-  },
-  achievements() { return page('Achievements and recognition', `<div class="grid">${D.achievements.map(achCard).join('') || empty('No achievements yet.')}</div>`); },
-  events() {
-    const up = D.events.filter(e => e.event_date >= today).reverse(), past = D.events.filter(e => e.event_date < today);
-    return page('Upcoming events', `<div class="grid">${up.map(evCard).join('') || empty('No upcoming events right now.')}</div>`) +
-      page('Past events', `<div class="grid">${past.map(evCard).join('') || empty('No past events yet.')}</div>`);
-  },
-  announcements() { return page('Announcements', `<div class="list">${[...D.announcements].sort((a,b) => b.pinned - a.pinned).map(annCard).join('') || empty('No announcements yet.')}</div>`); },
-  resources() {
-    return page('Learning and resources', `<div class="grid">${D.resources.map(r => `<div class="card"><div class="pad"><span class="tag">${esc(r.kind)}</span><h3>${esc(r.title)}</h3><p>${esc(r.description)}</p>${safeUrl(r.url) ? `<a class="btn" href="${esc(r.url)}" target="_blank" rel="noopener">Open</a>` : ''}</div></div>`).join('') || empty('No resources yet.')}</div>`);
-  },
-  contact() {
-    return page('Contact and feedback', `<div class="row"><div><p><b>${S('school_name')}</b><br>${S('contact_address')}</p><p>Phone: ${S('contact_phone')}<br>Email: ${S('contact_email')}</p></div>
-      <form id="fb"><label>Your name<input name="name" required maxlength="80"></label><label>Email (optional)<input name="email" type="email" maxlength="120"></label>
-      <label>Feedback or question<textarea name="message" rows="4" required minlength="5" maxlength="2000"></textarea></label><button>Send feedback</button></form></div>`);
-  }
-};
+function build() {
+  const stat = (n, l) => `<div class="stat"><b>${n}</b><span>${l}</span></div>`;
+  const about = [['Our mission','mission'],['Our vision','vision'],['Why it matters','importance']]
+    .filter(([, k]) => D.settings[k]).map(([t, k]) => `<div><h3>${t}</h3><p>${S(k)}</p></div>`).join('');
 
-function render() {
-  const name = location.hash.slice(1) || 'home';
-  $('#view').innerHTML = (routes[name] || routes.home)();
-  document.querySelectorAll('#nav a').forEach(a => a.classList.toggle('on', a.hash === '#' + name));
-  scrollTo(0, 0);
+  const members = D.members.map(m => `<article class="m rv"><div class="av">${safeUrl(m.photo_url) ? img(m.photo_url, m.name) : `<div>${esc((m.name || '?')[0])}</div>`}</div>
+    <h3>${esc(m.name)}</h3>${m.role ? `<span class="role">${esc(m.role)}</span>` : ''}<div class="cls">Class ${esc(m.class_div)}</div>
+    ${m.intro ? `<p>${esc(m.intro)}</p>` : ''}
+    ${m.interests ? `<div class="tags">${m.interests.split(',').map(t => `<i>${esc(t.trim())}</i>`).join('')}</div>` : ''}</article>`).join('');
+
+  const cats = ['All', ...new Set(D.gallery.map(g => g.category).filter(Boolean))];
+  const chips = cats.length > 2 ? `<div class="chips">${cats.map(c => `<button class="chip ${c === galCat ? 'on' : ''}" data-cat="${esc(c)}">${esc(c)}</button>`).join('')}</div>` : '';
+
+  const ach = D.achievements.map(a => `<article class="a rv ${a.featured ? 'f' : ''}"><div class="ico">${a.featured ? '🏆' : '⭐'}</div>
+    <div><h3>${esc(a.title)}</h3><small>${fmt(a.achieved_on)}</small><p>${esc(a.description)}</p>${img(a.photo_url, a.title)}</div></article>`).join('');
+
+  $('#view').innerHTML = `
+  <section class="hero" id="home"><div class="wrap"><div>
+    <span class="pill">${S('school_name')}</span>
+    <h1>Young minds building with <em>AI</em></h1>
+    <p>${S('welcome')}</p>
+    <div class="cta"><a class="btn" href="#members">Meet the members</a><a class="btn line" href="#gallery">See the gallery</a></div>
+  </div>${NET}</div></section>
+  <div class="wrap"><div class="stats">${stat(D.members.length, 'Club members')}${stat(D.projectCount, 'Projects')}${stat(D.achievements.length, 'Achievements')}${stat(D.gallery.length, 'Photos')}</div></div>
+  ${about ? `<section class="blk"><div class="wrap"><div class="about rv">${about}</div></div></section>` : ''}
+
+  <section class="blk" id="members"><div class="wrap"><div class="head"><small>The team</small><h2>Club members</h2><p>The curious students who build, test and share AI projects together.</p></div>
+    <div class="members">${members || '<div class="empty">Members will appear here soon.</div>'}</div></div></section>
+
+  <section class="blk" id="gallery"><div class="wrap"><div class="head"><small>Moments</small><h2>Gallery</h2><p>Sessions, workshops, demos and celebrations from our AI Club.</p></div>
+    ${chips}<div class="masonry" id="mas"></div></div></section>
+
+  <section class="blk" id="achievements"><div class="wrap"><div class="head"><small>Proud moments</small><h2>Achievements</h2><p>Milestones and recognition earned by our students and the club.</p></div>
+    <div class="ach">${ach || '<div class="empty">Achievements will appear here soon.</div>'}</div></div></section>`;
+  drawGallery(); watch();
+}
+
+function drawGallery() {
+  shown = D.gallery.filter(g => galCat === 'All' || g.category === galCat);
+  $('#mas').innerHTML = shown.map((g, i) => `<figure class="g" style="margin-left:0;margin-right:0" tabindex="0" data-i="${i}">${img(g.image_url, g.caption)}<span>${esc(g.caption)}</span></figure>`).join('') || '<div class="empty">Photos will appear here soon.</div>';
+}
+function openLb(i) {
+  if (!shown.length) return;
+  lbIndex = (i + shown.length) % shown.length; const g = shown[lbIndex], lb = $('#lb');
+  $('img', lb).src = safeUrl(g.image_url); $('img', lb).alt = g.caption; $('p', lb).textContent = [g.caption, g.description].filter(Boolean).join(' · ');
+  if (!lb.open) lb.showModal();
+}
+
+// highlight the current section in the menu + gentle fade-in
+function watch() {
+  const links = [...document.querySelectorAll('#nav a')];
+  const spy = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) links.forEach(a => a.classList.toggle('on', a.hash === '#' + e.target.id)); }), {rootMargin: '-45% 0px -50% 0px'});
+  document.querySelectorAll('section[id]').forEach(s => spy.observe(s));
+  const rv = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) { e.target.classList.add('in'); rv.unobserve(e.target); } }), {threshold: .12});
+  document.querySelectorAll('.rv').forEach(el => rv.observe(el));
 }
 
 document.addEventListener('click', e => {
-  const t = e.target.closest('[data-proj],[data-cat],[data-big]'); if (!t) return;
-  if (t.dataset.proj) { projFilter = t.dataset.proj; render(); }
-  if (t.dataset.cat) { galCat = t.dataset.cat; render(); }
-  if (t.dataset.big && safeUrl(t.dataset.big)) { const lb = $('#lb'); $('img', lb).src = t.dataset.big; $('p', lb).textContent = t.dataset.cap; lb.showModal(); }
+  const c = e.target.closest('[data-cat]'), g = e.target.closest('.g'), l = e.target.closest('[data-lb]');
+  if (c) { galCat = c.dataset.cat; document.querySelectorAll('.chip').forEach(x => x.classList.toggle('on', x === c)); drawGallery(); }
+  if (g) openLb(+g.dataset.i);
+  if (l) { const a = l.dataset.lb; a === 'close' ? $('#lb').close() : openLb(lbIndex + (a === 'next' ? 1 : -1)); }
+  if (e.target.id === 'lb') $('#lb').close();   // click on the dark background closes it
 });
-document.addEventListener('submit', async e => {
-  if (e.target.id !== 'fb') return;
-  e.preventDefault(); const f = e.target, btn = $('button', f); btn.disabled = true; btn.textContent = 'Sending…';
-  const { error } = await db.from('feedback').insert({name: f.name.value.trim(), email: f.email.value.trim() || null, message: f.message.value.trim()});
-  btn.disabled = false; btn.textContent = 'Send feedback';
-  if (error) return toast('Could not send feedback. Please try again.', true);
-  f.reset(); toast('Thank you! Your feedback was sent to the trainer.');
+document.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && e.target.classList.contains('g')) openLb(+e.target.dataset.i);
+  if ($('#lb').open && e.key === 'ArrowRight') openLb(lbIndex + 1);
+  if ($('#lb').open && e.key === 'ArrowLeft') openLb(lbIndex - 1);
 });
-window.addEventListener('hashchange', render);
 
 load().then(() => {
-  $('#foot').innerHTML = `<p><b>${S('club_name')}</b> at ${S('school_name')}</p>
-    <p>Supported by <b>${S('donor')}</b> · Implemented and managed by <b>${S('partner')}</b> · Website managed by ${S('managed_by')}</p>
+  build();
+  $('#foot').innerHTML = `<h3 style="color:#fff">${S('club_name')} · ${S('school_name')}</h3>
+    <div class="partners"><span>Supported by ${S('donor')}</span><span>Managed by ${S('partner')}</span></div>
+    <p>Website managed by ${S('managed_by')}. ${S('contact_email') ? 'Contact: ' + S('contact_email') : ''}</p>
     <p><a href="admin.html">Trainer login</a></p>`;
-  render();
-}).catch(err => { console.error(err); $('#view').innerHTML = '<div class="loading">Could not load the portal. Check config.js and that setup.sql was run.</div>'; });
+}).catch(err => { console.error(err); $('#view').innerHTML = '<div class="loading">Could not load the website. Please try again later.</div>'; });
